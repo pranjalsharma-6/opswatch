@@ -1,65 +1,134 @@
-import Image from "next/image";
+'use client'
+import { useState, useEffect } from 'react'
+import { Incident } from '@/lib/types'
+import StatCards from '@/components/StatCards'
+import LogInputPanel from '@/components/LogInputPanel'
+import IncidentTable from '@/components/IncidentTable'
+import { Activity, Terminal, Wifi } from 'lucide-react'
 
 export default function Home() {
+  const [incidents, setIncidents] = useState<Incident[]>([])
+  const [time, setTime] = useState('')
+
+  useEffect(() => {
+    fetch('/api/incidents')
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setIncidents(data) })
+  }, [])
+
+  useEffect(() => {
+    const tick = () => setTime(new Date().toLocaleTimeString('en-US', { hour12: false }))
+    tick()
+    const t = setInterval(tick, 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  function handleIncidentAdded(incident: Incident) {
+    setIncidents(prev => [incident, ...prev])
+  }
+
+  async function handleStatusChange(id: string, status: Incident['status']) {
+    const res = await fetch('/api/incidents', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, status }),
+    })
+    const updated = await res.json()
+    setIncidents(prev => prev.map(inc => inc.id === id ? updated : inc))
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="min-h-screen" style={{ background: 'var(--bg-base)' }}>
+      {/* TOP BAR */}
+      <header style={{
+        background: 'rgba(15,21,36,0.9)',
+        borderBottom: '1px solid var(--border)',
+        backdropFilter: 'blur(12px)',
+        padding: '0 24px',
+        height: '52px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        position: 'sticky',
+        top: 0,
+        zIndex: 50,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{
+            width: 32, height: 32,
+            background: 'linear-gradient(135deg, #1d4ed8, #3b82f6)',
+            borderRadius: 8,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 0 16px rgba(59,130,246,0.4)'
+          }}>
+            <Terminal size={16} color="white" />
+          </div>
+          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 15, letterSpacing: '-0.3px', color: 'var(--text-primary)' }}>
+            OpsWatch
+          </span>
+          <span style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10,
+            color: 'var(--accent-blue)',
+            background: 'var(--accent-blue-glow)',
+            border: '1px solid rgba(59,130,246,0.3)',
+            padding: '2px 6px', borderRadius: 4,
+            letterSpacing: '0.05em'
+          }}>v1.0</span>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Activity size={13} color="var(--accent-green)" />
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--accent-green)' }}>
+              AI TRIAGE ONLINE
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Wifi size={13} color="var(--text-secondary)" />
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>
+              {time}
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <main style={{ maxWidth: 1400, margin: '0 auto', padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* SYSTEM STATUS BAR */}
+        <div style={{
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: '10px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          color: 'var(--text-secondary)',
+          overflow: 'hidden',
+        }}>
+          <span style={{ color: 'var(--accent-green)', marginRight: 4 }}>●</span>
+          <span style={{ color: 'var(--accent-blue)' }}>sys@opswatch</span>
+          <span style={{ color: 'var(--text-muted)' }}>~$</span>
+          <span style={{ color: 'var(--text-secondary)' }}>
+            monitoring all services — paste logs below to trigger AI incident triage
+          </span>
+          <span style={{
+            marginLeft: 'auto',
+            color: 'var(--text-muted)',
+            whiteSpace: 'nowrap'
+          }}>
+            {incidents.length} incident{incidents.length !== 1 ? 's' : ''} tracked
+          </span>
+        </div>
+
+        <StatCards incidents={incidents} />
+
+        <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, alignItems: 'start' }}>
+          <LogInputPanel onIncidentAdded={handleIncidentAdded} />
+          <IncidentTable incidents={incidents} onStatusChange={handleStatusChange} />
         </div>
       </main>
     </div>
-  );
+  )
 }
