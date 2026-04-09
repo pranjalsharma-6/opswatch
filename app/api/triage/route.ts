@@ -13,6 +13,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No logs provided' }, { status: 400 })
     }
 
+    // Check if API key exists
+    if (!process.env.GROQ_API_KEY) {
+      return NextResponse.json({ error: 'GROQ_API_KEY not set' }, { status: 500 })
+    }
+
     const message = await client.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       max_tokens: 1024,
@@ -41,8 +46,10 @@ export async function POST(req: NextRequest) {
     const result = JSON.parse(clean)
 
     return NextResponse.json(result)
-  } catch (error) {
-    console.error('Triage error:', error)
-    return NextResponse.json({ error: 'Failed to analyze logs' }, { status: 500 })
+
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('Triage error:', message)
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }
