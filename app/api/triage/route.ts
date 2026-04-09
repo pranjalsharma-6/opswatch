@@ -20,89 +20,104 @@ export async function POST(req: NextRequest) {
 
     // Call Groq
     const completion = await client.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: 'mixtral-8x7b-32768',
       max_tokens: 1024,
       temperature: 0.1,
       messages: [
         {
           role: 'system',
-          content: `You are a senior SRE/DevOps engineer with 10+ years experience.
-Analyze the provided server logs and respond ONLY with a valid JSON object.
-No markdown, no code fences, no explanation — pure JSON only.
+          content: `You are a senior SRE/DevOps engineer. 
+Your task is to analyze server logs and return a JSON object.
+You must respond with ONLY a raw JSON object. 
+Do not include any markdown, code blocks, backticks, or explanation.
+Just the raw JSON object starting with { and ending with }.
 
-Required format:
+Use exactly this structure:
 {
-  "severity": "critical|warning|info",
-  "title": "short incident title max 8 words",
-  "root_cause": "one clear sentence explaining the root cause",
-  "impact": "one sentence describing the user or system impact",
+  "severity": "critical",
+  "title": "short title here",
+  "root_cause": "one sentence root cause here",
+  "impact": "one sentence impact here",
   "fix": "1. first step\n2. second step\n3. third step",
-  "component": "name of the affected service or component"
+  "component": "component name here"
 }
 
-Severity rules:
-- critical: data loss, full outage, cascading failures, security breach
-- warning: degraded performance, partial failure, approaching limits
-- info: normal operational events, successful completions, scaling events`
+Severity must be exactly one of: critical, warning, info
+- critical: full outage, data loss, cascading failure, security breach
+- warning: degraded performance, partial failure, approaching limits  
+- info: normal operations, successful events, scaling`
         },
         {
           role: 'user',
-          content: `Analyze these logs and return JSON only:\n\n${logs}`
+          content: `Logs to analyze:\n\n${logs}\n\nRespond with raw JSON only.`
         }
       ]
     })
 
-    // Extract response text
+    // Get raw response
     const raw = completion.choices[0]?.message?.content || ''
+    console.log('Groq raw response:', raw)
 
-    // Clean and extract JSON
-    const cleaned = raw
+    // Aggressively clean the response
+    let cleaned = raw
       .replace(/```json/gi, '')
       .replace(/```/g, '')
+      .replace(/^[^{]*/,'')     // remove anything before first {
+      .replace(/[^}]*$/, '')    // remove anything after last }
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      .replace(/,(\s*[}\]])/g, '$1')
       .trim()
 
-    // Find JSON object in response
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      console.error('No JSON found in response:', raw)
-      return NextResponse.json(
-        { error: 'AI returned an unexpected format. Please try again.' },
-        { status: 500 }
-      )
+    // Make sure it ends with }
+    if (!cleaned.endsWith('}')) {
+      cleaned = cleaned + '}'
     }
 
-    // Parse JSON
-    const result = JSON.parse(jsonMatch[0])
+    console.log('Cleaned JSON:', cleaned)
 
-    // Validate required fields
-    const required = ['severity', 'title', 'root_cause', 'impact', 'fix', 'component']
-    for (const field of required) {
-      if (!result[field]) {
-        result[field] = field === 'severity' ? 'info' : 'Not available'
+    // Parse JSON
+    let result
+    try {
+      result = JSON.parse(cleaned)
+    } catch {
+      // Last resort: try to extract with regex
+      const match = raw.match(/\{[\s\S]*?\}/)
+      if (match) {
+        result = JSON.parse(match[0])
+      } else {
+        return NextResponse.json(
+          { error: 'Could not parse AI response. Please try again.' },
+          { status: 500 }
+        )
       }
     }
 
-    // Validate severity value
-    if (!['critical', 'warning', 'info'].includes(result.severity)) {
-      result.severity = 'info'
+    // Ensure all fields exist
+    const sanitized = {
+      severity: ['critical', 'warning', 'info'].includes(result.severity)
+        ? result.severity
+        : 'info',
+      title:      result.title      || 'Incident detected',
+      root_cause: result.root_cause || 'Root cause under investigation',
+      impact:     result.impact     || 'Impact assessment in progress',
+      fix:        result.fix        || '1. Investigate logs\n2. Apply fix\n3. Monitor',
+      component:  result.component  || 'Unknown component',
     }
 
-    return NextResponse.json(result)
+    return NextResponse.json(sanitized)
 
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
     console.error('Triage API error:', msg)
 
-    // Handle specific error types
-    if (msg.includes('API key')) {
-      return NextResponse.json({ error: 'Invalid Groq API key' }, { status: 401 })
+    if (msg.includes('API key') || msg.includes('401')) {
+      return NextResponse.json({ error: 'Invalid Groq API key — check Vercel env vars' }, { status: 401 })
     }
-    if (msg.includes('JSON')) {
-      return NextResponse.json({ error: 'Failed to parse AI response' }, { status: 500 })
+    if (msg.includes('rate limit') || msg.includes('429')) {
+      return NextResponse.json({ error: 'Rate limit hit — try again in a moment' }, { status: 429 })
     }
-    if (msg.includes('rate limit')) {
-      return NextResponse.json({ error: 'Rate limit exceeded. Try again shortly.' }, { status: 429 })
+    if (msg.includes('model')) {
+      return NextResponse.json({ error: 'Model unavailable — try again shortly' }, { status: 503 })
     }
 
     return NextResponse.json({ error: msg }, { status: 500 })
