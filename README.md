@@ -20,7 +20,7 @@ Instead of an on-call engineer spending 30 minutes reading through hundreds of l
 
 When production systems fail, engineers face this workflow:
 
-1. Alert fires — often at 2am
+1. Alert fires — often at 2amnpm run dev
 2. Engineer manually reads hundreds of log lines
 3. Spends 20-30 minutes diagnosing the issue
 4. Searches docs and Stack Overflow for a fix
