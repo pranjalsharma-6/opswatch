@@ -59,40 +59,28 @@ Severity must be exactly one of: critical, warning, info
     console.log('Groq raw response:', raw)
 
     // Aggressively clean the response
-    let cleaned = raw
+    const cleaned = raw
       .replace(/```json/gi, '')
       .replace(/```/g, '')
-      .replace(/^[^{]*/,'')     // remove anything before first {
-      .replace(/[^}]*$/, '')    // remove anything after last }
-      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-      .replace(/,(\s*[}\]])/g, '$1')
+      .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '')
       .trim()
 
-    // Make sure it ends with }
-    if (!cleaned.endsWith('}')) {
-      cleaned = cleaned + '}'
+    // Extract JSON object
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      return NextResponse.json(
+        { error: 'Could not parse AI response. Please try again.' },
+        { status: 500 }
+      )
     }
-
-    console.log('Cleaned JSON:', cleaned)
 
     // Parse JSON
-    let result
-    try {
-      result = JSON.parse(cleaned)
-    } catch {
-      // Last resort: try to extract with regex
-      const match = raw.match(/\{[\s\S]*?\}/)
-      if (match) {
-        result = JSON.parse(match[0])
-      } else {
-        return NextResponse.json(
-          { error: 'Could not parse AI response. Please try again.' },
-          { status: 500 }
-        )
-      }
-    }
+    const jsonStr = jsonMatch[0].replace(/\\n/g, '\n')
+    const result = JSON.parse(jsonStr)
 
-    // Ensure all fields exist
+    // Ensure all fields exist with fallbacks
     const sanitized = {
       severity: ['critical', 'warning', 'info'].includes(result.severity)
         ? result.severity
@@ -111,7 +99,7 @@ Severity must be exactly one of: critical, warning, info
     console.error('Triage API error:', msg)
 
     if (msg.includes('API key') || msg.includes('401')) {
-      return NextResponse.json({ error: 'Invalid Groq API key — check Vercel env vars' }, { status: 401 })
+      return NextResponse.json({ error: 'Invalid Groq API key' }, { status: 401 })
     }
     if (msg.includes('rate limit') || msg.includes('429')) {
       return NextResponse.json({ error: 'Rate limit hit — try again in a moment' }, { status: 429 })
