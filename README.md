@@ -2,53 +2,41 @@
 
 > Paste raw server logs. Get instant AI triage. Track incidents to resolution.
 
-![OpsWatch Dashboard](https://opswatch-kcgi.vercel.app/og.png)
+**Live demo → [opswatch-kcgi.vercel.app](https://opswatch-kcgi.vercel.app)**
 
-**Live Demo → [opswatch-kcgi.vercel.app](https://opswatch-kcgi.vercel.app)**
+![OpsWatch dashboard](docs/screenshot.png)
 
 ---
 
 ## What is OpsWatch?
 
-OpsWatch is a real-time DevOps incident triage dashboard that uses AI to analyze raw server logs and automatically classify severity, identify root cause, and suggest fixes — in under 3 seconds.
+OpsWatch is a DevOps incident triage dashboard. Paste raw server logs and an LLM
+classifies severity, names the root cause, states the business impact, and returns
+numbered remediation steps — then the incident is tracked to resolution with MTTR
+reporting.
 
-Instead of an on-call engineer spending 30 minutes reading through hundreds of log lines at 2am, OpsWatch gives them structured, actionable triage instantly.
-
----
-
-## The Problem
-
-When production systems fail, engineers face this workflow:
-
-1. Alert fires — often at 2amnpm run dev
-2. Engineer manually reads hundreds of log lines
-3. Spends 20-30 minutes diagnosing the issue
-4. Searches docs and Stack Overflow for a fix
-5. Finally resolves it — sometimes hours later
-
-**Every minute of downtime costs money.** OpsWatch compresses that 30-minute process into 3 seconds.
+The workflow it replaces: an on-call engineer reading hundreds of log lines at 2am,
+spending 20–30 minutes diagnosing, then searching for a fix. OpsWatch compresses the
+triage step to a few seconds.
 
 ---
 
 ## Features
 
-**AI Triage Engine**
-Paste raw server logs and get back structured analysis — severity classification, plain-English root cause, business impact, and numbered remediation steps — powered by Groq's LLaMA 3.3 70B model.
-
-**Incident Lifecycle Management**
-Every incident is tracked with a full status lifecycle — Open → In Progress → Resolved. One click cycles the status. All changes persist in PostgreSQL in real time.
-
-**Real-time Dashboard**
-Live stat cards show counts of Critical, Warning, Info, and Resolved incidents. Cards glow with color-coded severity when incidents exist.
-
-**Smart Filtering and Search**
-Filter incidents by severity or status. Full-text search across titles, components, and root causes instantly.
-
-**Log Input Panel**
-Paste raw logs directly or upload a `.log` or `.txt` file. Pre-built sample scenarios cover the most common production failure patterns.
-
-**Detail Drawer**
-Click any incident row to expand a full detail view with root cause, business impact, fix steps, and the original log snippet.
+- **AI triage** — severity, root cause, impact, remediation steps, and the failing
+  component, extracted from raw logs via Groq. Uses the model's Structured Outputs
+  mode so the response conforms to a JSON schema rather than being parsed heuristically.
+- **Model fallback chain** — hosted models get retired regularly. OpsWatch walks a
+  chain of models and degrades to the next one instead of going down, and `GROQ_MODEL`
+  pins a specific model when needed.
+- **Incident lifecycle** — Open → In Progress → Resolved, one click per transition,
+  applied optimistically and rolled back if the write fails.
+- **Operational metrics** — MTTR, resolution rate, active count, and the most affected
+  component, computed from `resolved_at` timestamps.
+- **Filtering, search, and CSV export** — filter by severity or status, full-text search
+  across title, component, and root cause, and export the filtered view.
+- **Log input** — paste directly, upload a `.log`/`.txt` file, or load one of six sample
+  failure scenarios.
 
 ---
 
@@ -56,11 +44,40 @@ Click any incident row to expand a full detail view with root cause, business im
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 14 + TypeScript |
-| Styling | Tailwind CSS + shadcn/ui |
-| AI Model | Groq API — LLaMA 3.3 70B |
+| Framework | Next.js 16 (App Router) + React 19 + TypeScript |
+| Styling | Tailwind CSS v4 |
+| AI | Groq — LLaMA 3.3 70B, with a fallback chain |
 | Database | Supabase (PostgreSQL) |
+| Testing | Vitest — 56 tests |
+| CI | GitHub Actions — lint, typecheck, test, build |
 | Deployment | Vercel |
+
+---
+
+## Architecture
+
+```
+Browser (React client components)
+  │
+  │  POST /api/triage        { logs }
+  ▼
+Route handler
+  ├─ rate limit + input validation (20k char cap)
+  ├─ Groq chat completion, Structured Outputs against a JSON schema
+  ├─ model fallback chain on a retired-model error
+  └─ normalise + validate every field
+  │
+  │  POST /api/incidents     { severity, title, root_cause, ... }
+  ▼
+Route handler (service-role Supabase client)
+  └─ incident_no assigned by a Postgres sequence
+  │
+  ▼
+PostgreSQL — RLS on, no anon policy; all access server-side
+```
+
+Clients never talk to Supabase directly. Every read and write goes through a route
+handler, so row level security can deny anonymous access outright.
 
 ---
 
@@ -68,155 +85,154 @@ Click any incident row to expand a full detail view with root cause, business im
 
 ### Prerequisites
 
-- Node.js 18+
-- A [Supabase](https://supabase.com) account (free)
+- Node.js 20.9+ (required by Next.js 16)
+- A [Supabase](https://supabase.com) project (free)
 - A [Groq](https://console.groq.com) API key (free)
 
-### 1. Clone the repository
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/pranjalsharma-6/opswatch.git
 cd opswatch
-```
-
-### 2. Install dependencies
-
-```bash
 npm install
 ```
 
-### 3. Set up Supabase
+### 2. Set up the database
 
-Go to your Supabase project → SQL Editor and run:
+Run [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql) in the
+Supabase SQL editor. It creates the `incidents` table, the incident-number sequence,
+indexes, and enables row level security.
 
-```sql
-create table incidents (
-  id           uuid primary key default gen_random_uuid(),
-  incident_no  text not null,
-  severity     text check (severity in ('critical', 'warning', 'info')),
-  title        text not null,
-  root_cause   text,
-  impact       text,
-  fix          text,
-  component    text,
-  status       text default 'open' check (status in ('open', 'in-progress', 'resolved')),
-  log_snippet  text,
-  created_at   timestamptz default now()
-);
+Upgrading an existing OpsWatch database instead? Run
+[`0002_add_resolved_at.sql`](supabase/migrations/0002_add_resolved_at.sql).
 
-alter table incidents enable row level security;
-create policy "Allow all" on incidents for all using (true);
+### 3. Configure the environment
+
+```bash
+cp .env.example .env.local
 ```
 
-### 4. Configure environment variables
+Then fill in the values:
 
-Create a `.env.local` file in the project root:
+| Variable | Required | Notes |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | yes | Supabase → Project Settings → API |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Same page |
+| `SUPABASE_SERVICE_ROLE_KEY` | recommended | Server-only. Bypasses RLS — never expose it to the client |
+| `GROQ_API_KEY` | yes | console.groq.com |
+| `GROQ_MODEL` | no | Pins one model; otherwise the fallback chain is used |
 
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key_here
-GROQ_API_KEY=your_groq_api_key_here
-```
-
-### 5. Run the development server
+### 4. Run
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000).
+
+The app starts and builds without any environment variables set — missing configuration
+surfaces as an actionable message in the UI rather than a crash.
 
 ---
 
-## How It Works
-Engineer pastes raw server logs
-↓
-Frontend sends logs to /api/triage
-↓
-Next.js API route calls Groq LLaMA 3.3 70B
-↓
-AI returns structured JSON:
-severity, title, root_cause,
-impact, fix, component
-↓
-Incident saved to Supabase PostgreSQL
-↓
-Dashboard updates in real time
-— stat cards, incident table, filters
-↓
-Engineer cycles status:
-Open → In Progress → Resolved
+## Scripts
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Development server |
+| `npm run build` | Production build |
+| `npm test` | Run the test suite |
+| `npm run test:watch` | Tests in watch mode |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | `tsc --noEmit` |
+
+---
+
+## Testing
+
+56 tests covering log parsing, model-response handling, metrics, rate limiting, and
+both API route handlers (with the Groq and Supabase clients mocked).
+
+```bash
+npm test
+```
+
+The suite includes regression tests for each bug listed below, so they cannot return
+silently.
+
+---
+
+## Notable Engineering Decisions
+
+**Clients are constructed lazily, not at module scope.** `new Groq({ apiKey })` throws
+when the key is absent. Building it at module scope meant the route module failed to
+load, which failed `next build` during page-data collection — the whole app, because one
+optional integration was unconfigured. Both the Groq and Supabase clients are now built
+inside the request path.
+
+**Structured Outputs instead of repairing JSON by hand.** The model is constrained to a
+JSON schema. The earlier approach escaped every newline across the response and unescaped
+it after extraction, which converted the model's `\n` escapes into literal newlines inside
+JSON string literals — invalid JSON, so every response containing a multi-step fix threw.
+
+**A model chain, not a hardcoded id.** Groq retires hosted models on a rolling basis, and
+a retired id returns a 404 that took the feature down until the string was edited by hand.
+
+**Incident numbers come from a Postgres sequence.** They were previously derived in the
+browser from the current row count, so two concurrent saves read the same count and
+produced duplicate numbers.
+
+**Writes are server-side and RLS denies anonymous access.** The anon key ships to the
+browser, so a policy permissive enough for direct client writes is equally open to anyone
+reading the page source. Route handlers hold the service-role key instead.
+
+**Rate limiting is in-memory and per-instance.** It stops one client from trivially
+draining the Groq quota. On serverless each instance carries its own counter, so the
+effective global limit is higher than configured — a durable store (Redis, Postgres) is
+the next step.
 
 ---
 
 ## Sample Log Scenarios
 
-OpsWatch handles all common production failure patterns:
-
-| Scenario | Severity | Example |
+| Scenario | Severity | Signature |
 |---|---|---|
-| Kubernetes OOM Kill | Critical | Container exceeded memory limit, CrashLoopBackOff |
-| Database Connection Exhaustion | Critical | PostgreSQL max_connections exceeded |
-| Redis Cache Failure | Critical | CLUSTERDOWN, circuit breaker open |
+| Kubernetes OOM kill | Critical | Container over memory limit, CrashLoopBackOff |
+| Database connection exhaustion | Critical | PostgreSQL `max_connections` exceeded |
+| Redis cache failure | Critical | `CLUSTERDOWN`, circuit breaker open |
 | 502 Bad Gateway | Warning | Nginx upstream timeout, ImagePullBackOff |
-| Disk Space Critical | Warning | /var/log at 100%, MySQL write failures |
-| Auto-scaling Event | Info | HPA scale-out triggered by traffic spike |
-
----
-
-## Project Structure
-opswatch/
-├── app/
-│   ├── api/
-│   │   ├── triage/
-│   │   │   └── route.ts        # AI triage endpoint
-│   │   └── incidents/
-│   │       └── route.ts        # Incident CRUD
-│   ├── globals.css
-│   ├── layout.tsx
-│   └── page.tsx                # Main dashboard
-├── components/
-│   ├── StatCards.tsx           # Live incident counters
-│   ├── LogInputPanel.tsx       # Log input + AI result
-│   ├── IncidentTable.tsx       # Incident list + filters
-│   └── IncidentDrawer.tsx      # Expanded incident detail
-└── lib/
-├── supabase.ts             # Supabase client
-└── types.ts                # TypeScript interfaces
+| Disk space critical | Warning | `/var/log` at 100%, MySQL write failures |
+| Auto-scaling event | Info | HPA scale-out on a traffic spike |
 
 ---
 
 ## Deployment
 
-This project is deployed on Vercel. To deploy your own instance:
-
-1. Push the repository to GitHub
-2. Import the project on [Vercel](https://vercel.com)
-3. Add the three environment variables in Vercel dashboard
-4. Deploy
+1. Push to GitHub.
+2. Import the project on [Vercel](https://vercel.com).
+3. Add the environment variables from the table above.
+4. Deploy.
 
 ---
 
-## What I'd Build Next
+## Roadmap
 
-- **Slack integration** — auto-notify team when critical incidents are created or resolved
-- **Mean Time to Resolution (MTTR) metrics** — track incident resolution performance over time
-- **Pattern detection** — AI identifies recurring incidents and flags systemic issues
-- **Multi-user support** — assign incidents to specific engineers
-- **Webhook support** — auto-ingest logs from Datadog, PagerDuty, or Grafana alerts
+- Slack notifications on critical incidents
+- Recurring-incident detection to flag systemic issues
+- Webhook ingestion from Datadog, PagerDuty, and Grafana
+- Multi-user support with per-engineer assignment
+- Durable rate limiting backed by Redis
 
 ---
 
 ## Author
 
-**Pranjal Sharma**
-B.Tech Electronics and Computer Science — KIIT University
+**Pranjal Sharma** — B.Tech Electronics and Computer Science, KIIT University
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue)](https://linkedin.com/in/your-linkedin)
-[![GitHub](https://img.shields.io/badge/GitHub-Follow-black)](https://github.com/pranjalsharma-6)
+[GitHub](https://github.com/pranjalsharma-6)
 
 ---
 
 ## License
 
-MIT License — feel free to use this project as inspiration or a starting point.
+MIT

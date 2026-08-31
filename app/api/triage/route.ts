@@ -1,113 +1,106 @@
-import Groq from 'groq-sdk'
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { getGroqClient, getModelChain, isModelUnavailableError } from '@/lib/groq'
+import { ConfigError } from '@/lib/errors'
+import { clientKey, pruneRateLimits, rateLimit } from '@/lib/rate-limit'
+import {
+  SYSTEM_PROMPT,
+  TRIAGE_SCHEMA,
+  parseTriageResponse,
+  validateLogs,
+} from '@/lib/triage'
 
-const client = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-})
+/** Triage calls a third-party model; never serve a cached response. */
+export const dynamic = 'force-dynamic'
+
+const RATE_LIMIT = 10
+const RATE_WINDOW_MS = 60_000
 
 export async function POST(req: NextRequest) {
+  pruneRateLimits()
+  const limit = rateLimit(`triage:${clientKey(req.headers)}`, RATE_LIMIT, RATE_WINDOW_MS)
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: `Rate limit reached. Try again in ${limit.retryAfterSeconds}s.` },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
+    )
+  }
+
+  let logs: unknown
   try {
-    // Validate request
-    const { logs } = await req.json()
-    if (!logs?.trim()) {
-      return NextResponse.json({ error: 'No logs provided' }, { status: 400 })
+    ;({ logs } = await req.json())
+  } catch {
+    return NextResponse.json({ error: 'Request body must be JSON.' }, { status: 400 })
+  }
+
+  const invalid = validateLogs(logs)
+  if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
+
+  let client
+  try {
+    client = getGroqClient()
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      return NextResponse.json({ error: error.message }, { status: 500 })
     }
+    throw error
+  }
 
-    // Validate API key
-    if (!process.env.GROQ_API_KEY) {
-      return NextResponse.json({ error: 'GROQ_API_KEY not configured' }, { status: 500 })
+  // Walk the model chain so a retired model id degrades instead of failing.
+  const models = getModelChain()
+  let lastError: unknown = null
+
+  for (const model of models) {
+    try {
+      const completion = await client.chat.completions.create({
+        model,
+        max_tokens: 1024,
+        temperature: 0.1,
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'triage', strict: true, schema: TRIAGE_SCHEMA },
+        },
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: `Analyse these logs:\n\n${logs as string}` },
+        ],
+      })
+
+      const raw = completion.choices[0]?.message?.content ?? ''
+      return NextResponse.json(parseTriageResponse(raw))
+    } catch (error) {
+      lastError = error
+      if (isModelUnavailableError(error)) {
+        console.warn(`[opswatch] model "${model}" unavailable, trying the next one`)
+        continue
+      }
+      break
     }
+  }
 
-    // Call Groq
-    const completion = await client.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 1024,
-      temperature: 0.1,
-      messages: [
-        {
-          role: 'system',
-          content: `You are a senior SRE/DevOps engineer. 
-Your task is to analyze server logs and return a JSON object.
-You must respond with ONLY a raw JSON object. 
-Do not include any markdown, code blocks, backticks, or explanation.
-Just the raw JSON object starting with { and ending with }.
-
-Use exactly this structure:
-{
-  "severity": "critical",
-  "title": "short title here",
-  "root_cause": "one sentence root cause here",
-  "impact": "one sentence impact here",
-  "fix": "1. first step\n2. second step\n3. third step",
-  "component": "component name here"
+  return NextResponse.json({ error: describeError(lastError, models) }, { status: statusFor(lastError) })
 }
 
-Severity must be exactly one of: critical, warning, info
-- critical: full outage, data loss, cascading failure, security breach
-- warning: degraded performance, partial failure, approaching limits  
-- info: normal operations, successful events, scaling`
-        },
-        {
-          role: 'user',
-          content: `Logs to analyze:\n\n${logs}\n\nRespond with raw JSON only.`
-        }
-      ]
-    })
+function statusFor(error: unknown): number {
+  const status = (error as { status?: number } | null)?.status
+  if (status === 401 || status === 403) return 401
+  if (status === 429) return 429
+  if (isModelUnavailableError(error)) return 503
+  return 502
+}
 
-    // Get raw response
-    const raw = completion.choices[0]?.message?.content || ''
-    console.log('Groq raw response:', raw)
+/** Maps a provider error to a message that says what to actually do about it. */
+function describeError(error: unknown, models: string[]): string {
+  const status = (error as { status?: number } | null)?.status
 
-    // Aggressively clean the response
-    const cleaned = raw
-      .replace(/```json/gi, '')
-      .replace(/```/g, '')
-      .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '')
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '')
-      .trim()
-
-    // Extract JSON object
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      return NextResponse.json(
-        { error: 'Could not parse AI response. Please try again.' },
-        { status: 500 }
-      )
-    }
-
-    // Parse JSON
-    const jsonStr = jsonMatch[0].replace(/\\n/g, '\n')
-    const result = JSON.parse(jsonStr)
-
-    // Ensure all fields exist with fallbacks
-    const sanitized = {
-      severity: ['critical', 'warning', 'info'].includes(result.severity)
-        ? result.severity
-        : 'info',
-      title:      result.title      || 'Incident detected',
-      root_cause: result.root_cause || 'Root cause under investigation',
-      impact:     result.impact     || 'Impact assessment in progress',
-      fix:        result.fix        || '1. Investigate logs\n2. Apply fix\n3. Monitor',
-      component:  result.component  || 'Unknown component',
-    }
-
-    return NextResponse.json(sanitized)
-
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error)
-    console.error('Triage API error:', msg)
-
-    if (msg.includes('API key') || msg.includes('401')) {
-      return NextResponse.json({ error: 'Invalid Groq API key' }, { status: 401 })
-    }
-    if (msg.includes('rate limit') || msg.includes('429')) {
-      return NextResponse.json({ error: 'Rate limit hit — try again in a moment' }, { status: 429 })
-    }
-    if (msg.includes('model')) {
-      return NextResponse.json({ error: 'Model unavailable — try again shortly' }, { status: 503 })
-    }
-
-    return NextResponse.json({ error: msg }, { status: 500 })
+  if (status === 401 || status === 403) {
+    return 'Groq rejected the API key. Check GROQ_API_KEY in your environment.'
   }
+  if (status === 429) {
+    return 'Groq rate limit reached. Wait a moment and try again.'
+  }
+  if (isModelUnavailableError(error)) {
+    return `None of the configured models are available (tried: ${models.join(', ')}). Set GROQ_MODEL to a current model from console.groq.com/docs/models.`
+  }
+  const message = error instanceof Error ? error.message : String(error ?? 'Unknown error')
+  return `Triage failed: ${message}`
 }
