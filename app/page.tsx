@@ -1,132 +1,171 @@
 'use client'
-import { useState, useEffect } from 'react'
-import { Incident } from '@/lib/types'
+import { useCallback, useEffect, useState } from 'react'
+import { Activity, Terminal, Wifi } from 'lucide-react'
+import type { Incident, Status } from '@/lib/types'
 import StatCards from '@/components/StatCards'
 import LogInputPanel from '@/components/LogInputPanel'
 import IncidentTable from '@/components/IncidentTable'
-import { Activity, Terminal, Wifi } from 'lucide-react'
+import { ToastProvider, useToast } from '@/components/Toast'
 
-export default function Home() {
+export default function Page() {
+  return (
+    <ToastProvider>
+      <Dashboard />
+    </ToastProvider>
+  )
+}
+
+function Dashboard() {
   const [incidents, setIncidents] = useState<Incident[]>([])
-  const [time, setTime] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [clock, setClock] = useState('')
+  const toast = useToast()
 
   useEffect(() => {
-    fetch('/api/incidents')
-      .then(r => r.json())
-      .then(data => { if (Array.isArray(data)) setIncidents(data) })
-  }, [])
+    let cancelled = false
+
+    async function load() {
+      try {
+        const res = await fetch('/api/incidents')
+        // The route returns an error object rather than an array on failure,
+        // so the shape is checked instead of assumed.
+        const payload = await res.json().catch(() => null)
+        if (!res.ok) {
+          throw new Error(payload?.error || `Could not load incidents (HTTP ${res.status})`)
+        }
+        if (!cancelled) setIncidents(Array.isArray(payload) ? payload : [])
+      } catch (e) {
+        if (cancelled) return
+        const message = e instanceof Error ? e.message : 'Could not load incidents'
+        setLoadError(message)
+        toast('error', message)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [toast])
 
   useEffect(() => {
-    const tick = () => setTime(new Date().toLocaleTimeString('en-US', { hour12: false }))
+    const tick = () => setClock(new Date().toLocaleTimeString('en-US', { hour12: false }))
     tick()
-    const t = setInterval(tick, 1000)
-    return () => clearInterval(t)
+    const timer = setInterval(tick, 1000)
+    return () => clearInterval(timer)
   }, [])
 
-  function handleIncidentAdded(incident: Incident) {
-    setIncidents(prev => [incident, ...prev])
-  }
+  const handleIncidentAdded = useCallback((incident: Incident) => {
+    setIncidents((prev) => [incident, ...prev])
+  }, [])
 
-  async function handleStatusChange(id: string, status: Incident['status']) {
-    const res = await fetch('/api/incidents', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, status }),
-    })
-    const updated = await res.json()
-    setIncidents(prev => prev.map(inc => inc.id === id ? updated : inc))
-  }
+  const handleStatusChange = useCallback(
+    async (id: string, status: Status) => {
+      const previous = incidents
+      // Update optimistically so the click feels instant, then roll back on failure.
+      setIncidents((prev) =>
+        prev.map((incident) => (incident.id === id ? { ...incident, status } : incident))
+      )
+
+      try {
+        const res = await fetch('/api/incidents', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, status }),
+        })
+        const payload = await res.json().catch(() => ({}) as { error?: string })
+        if (!res.ok) throw new Error(payload.error || `Update failed (HTTP ${res.status})`)
+
+        const updated = payload as Incident
+        setIncidents((prev) => prev.map((incident) => (incident.id === id ? updated : incident)))
+      } catch (e) {
+        setIncidents(previous)
+        toast('error', e instanceof Error ? e.message : 'Could not update the incident')
+      }
+    },
+    [incidents, toast]
+  )
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg-base)' }}>
-      {/* TOP BAR */}
-      <header style={{
-        background: 'rgba(15,21,36,0.9)',
-        borderBottom: '1px solid var(--border)',
-        backdropFilter: 'blur(12px)',
-        padding: '0 24px',
-        height: '52px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        position: 'sticky',
-        top: 0,
-        zIndex: 50,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{
-            width: 32, height: 32,
-            background: 'linear-gradient(135deg, #1d4ed8, #3b82f6)',
-            borderRadius: 8,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 0 16px rgba(59,130,246,0.4)'
-          }}>
+    <div className="min-h-screen">
+      <header
+        className="sticky top-0 z-50 flex h-[52px] items-center justify-between px-4 backdrop-blur-md sm:px-6"
+        style={{ background: 'rgba(15,21,36,0.9)', borderBottom: '1px solid var(--color-edge)' }}
+      >
+        <div className="flex items-center gap-2.5">
+          <div
+            className="flex size-8 items-center justify-center rounded-lg"
+            style={{
+              background: 'linear-gradient(135deg, #1d4ed8, #3b82f6)',
+              boxShadow: '0 0 16px rgba(59,130,246,0.4)',
+            }}
+          >
             <Terminal size={16} color="white" />
           </div>
-          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 15, letterSpacing: '-0.3px', color: 'var(--text-primary)' }}>
-            OpsWatch
+          <span className="font-mono text-[15px] font-semibold tracking-tight">OpsWatch</span>
+          <span
+            className="rounded border px-1.5 py-px font-mono text-[10px] tracking-wider"
+            style={{
+              color: 'var(--color-info)',
+              background: 'rgba(59,130,246,0.15)',
+              borderColor: 'rgba(59,130,246,0.3)',
+            }}
+          >
+            v1.1
           </span>
-          <span style={{
-            fontFamily: 'var(--font-mono)', fontSize: 10,
-            color: 'var(--accent-blue)',
-            background: 'var(--accent-blue-glow)',
-            border: '1px solid rgba(59,130,246,0.3)',
-            padding: '2px 6px', borderRadius: 4,
-            letterSpacing: '0.05em'
-          }}>v1.0</span>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Activity size={13} color="var(--accent-green)" />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--accent-green)' }}>
+        <div className="flex items-center gap-4 sm:gap-5">
+          <div className="hidden items-center gap-1.5 sm:flex">
+            <Activity size={13} color="var(--color-ok)" className="animate-pulse-dot" />
+            <span className="font-mono text-xs" style={{ color: 'var(--color-ok)' }}>
               AI TRIAGE ONLINE
             </span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Wifi size={13} color="var(--text-secondary)" />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>
-              {time}
+          <div className="flex items-center gap-1.5">
+            <Wifi size={13} color="var(--color-ink-dim)" />
+            {/* Rendered after mount only: a server-rendered clock would not match. */}
+            <span
+              className="font-mono text-xs tabular-nums"
+              style={{ color: 'var(--color-ink-dim)' }}
+              suppressHydrationWarning
+            >
+              {clock || '--:--:--'}
             </span>
           </div>
         </div>
       </header>
 
-      <main style={{ maxWidth: 1400, margin: '0 auto', padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {/* SYSTEM STATUS BAR */}
-        <div style={{
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border)',
-          borderRadius: 10,
-          padding: '10px 16px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          fontFamily: 'var(--font-mono)',
-          fontSize: 11,
-          color: 'var(--text-secondary)',
-          overflow: 'hidden',
-        }}>
-          <span style={{ color: 'var(--accent-green)', marginRight: 4 }}>●</span>
-          <span style={{ color: 'var(--accent-blue)' }}>sys@opswatch</span>
-          <span style={{ color: 'var(--text-muted)' }}>~$</span>
-          <span style={{ color: 'var(--text-secondary)' }}>
-            monitoring all services — paste logs below to trigger AI incident triage
+      <main className="mx-auto flex max-w-[1400px] flex-col gap-4 px-4 py-5 sm:px-4">
+        <div
+          className="panel flex flex-wrap items-center gap-2 overflow-hidden px-4 py-2.5 font-mono text-[11px]"
+          style={{ color: 'var(--color-ink-dim)' }}
+        >
+          <span style={{ color: 'var(--color-ok)' }}>●</span>
+          <span style={{ color: 'var(--color-info)' }}>sys@opswatch</span>
+          <span style={{ color: 'var(--color-ink-faint)' }}>~$</span>
+          <span className="truncate">
+            {loadError
+              ? `error: ${loadError}`
+              : 'monitoring all services — paste logs below to trigger AI incident triage'}
           </span>
-          <span style={{
-            marginLeft: 'auto',
-            color: 'var(--text-muted)',
-            whiteSpace: 'nowrap'
-          }}>
-            {incidents.length} incident{incidents.length !== 1 ? 's' : ''} tracked
+          <span className="ml-auto whitespace-nowrap" style={{ color: 'var(--color-ink-faint)' }}>
+            {incidents.length} incident{incidents.length === 1 ? '' : 's'} tracked
           </span>
         </div>
 
         <StatCards incidents={incidents} />
 
-        <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, alignItems: 'start' }}>
+        <div className="grid items-start gap-4 lg:grid-cols-[340px_1fr]">
           <LogInputPanel onIncidentAdded={handleIncidentAdded} />
-          <IncidentTable incidents={incidents} onStatusChange={handleStatusChange} />
+          <IncidentTable
+            incidents={incidents}
+            onStatusChange={handleStatusChange}
+            loading={loading}
+          />
         </div>
       </main>
     </div>

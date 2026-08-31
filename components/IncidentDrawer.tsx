@@ -1,44 +1,68 @@
 'use client'
-import { Incident } from '@/lib/types'
+import type { Incident } from '@/lib/types'
+import { formatDuration, formatRelative } from '@/lib/metrics'
 
-interface Props { incident: Incident }
+export default function IncidentDrawer({ incident }: { incident: Incident }) {
+  const resolvedIn =
+    incident.resolved_at && incident.created_at
+      ? formatDuration(Date.parse(incident.resolved_at) - Date.parse(incident.created_at))
+      : null
 
-export default function IncidentDrawer({ incident }: Props) {
   return (
-    <div style={{
-      background: 'rgba(59,130,246,0.03)',
-      borderTop: '1px solid rgba(59,130,246,0.15)',
-      padding: '16px 20px',
-    }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        {[
-          { label: 'root_cause', val: incident.root_cause },
-          { label: 'impact',     val: incident.impact },
-        ].map(f => (
-          <div key={f.label}>
-            <p style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>{f.label}</p>
-            <p style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-primary)' }}>{f.val}</p>
-          </div>
-        ))}
-        <div style={{ gridColumn: '1 / -1' }}>
-          <p style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>suggested_fix</p>
-          <p style={{ fontSize: 12.5, lineHeight: 1.7, color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>{incident.fix}</p>
-        </div>
-        {incident.log_snippet && (
-          <div style={{ gridColumn: '1 / -1' }}>
-            <p style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>log_snippet</p>
-            <pre style={{
-              fontFamily: 'var(--font-mono)', fontSize: 11,
-              background: 'var(--bg-input)',
-              border: '1px solid var(--border)',
-              borderRadius: 8, padding: '10px 14px',
-              lineHeight: 1.7, color: '#6b9fd4',
-              overflowX: 'auto', maxHeight: 100,
-              whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-            }}>{incident.log_snippet}</pre>
-          </div>
-        )}
+    <div
+      className="animate-slide-up grid gap-4 px-5 py-4 sm:grid-cols-2"
+      style={{ background: 'rgba(59,130,246,0.03)', borderTop: '1px solid rgba(59,130,246,0.15)' }}
+    >
+      <Field label="root_cause" value={incident.root_cause} />
+      <Field label="impact" value={incident.impact} />
+
+      <div className="sm:col-span-2">
+        <p className="field-label mb-1.5">suggested_fix</p>
+        <p className="whitespace-pre-line text-[12.5px] leading-relaxed" style={{ color: 'var(--color-ink)' }}>
+          {incident.fix}
+        </p>
       </div>
+
+      <div className="flex flex-wrap gap-x-6 gap-y-2 sm:col-span-2">
+        <Meta label="opened" value={formatRelative(incident.created_at)} />
+        {resolvedIn && <Meta label="resolved in" value={resolvedIn} />}
+        <Meta label="component" value={incident.component} />
+      </div>
+
+      {incident.log_snippet && (
+        <div className="sm:col-span-2">
+          <p className="field-label mb-1.5">log_snippet</p>
+          <pre
+            className="max-h-40 overflow-auto rounded-lg border px-3.5 py-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words"
+            style={{
+              background: 'var(--color-field)',
+              borderColor: 'var(--color-edge)',
+              color: '#6b9fd4',
+            }}
+          >
+            {incident.log_snippet}
+          </pre>
+        </div>
+      )}
     </div>
+  )
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="field-label mb-1.5">{label}</p>
+      <p className="text-[12.5px] leading-relaxed" style={{ color: 'var(--color-ink)' }}>
+        {value}
+      </p>
+    </div>
+  )
+}
+
+function Meta({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="font-mono text-[11px]" style={{ color: 'var(--color-ink-faint)' }}>
+      {label}: <span style={{ color: 'var(--color-ink-dim)' }}>{value}</span>
+    </span>
   )
 }

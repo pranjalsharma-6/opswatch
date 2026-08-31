@@ -13,6 +13,7 @@ export interface Incident {
   status: Status
   log_snippet: string
   created_at: string
+  resolved_at: string | null
 }
 
 export interface TriageResult {
@@ -23,3 +24,10 @@ export interface TriageResult {
   fix: string
   component: string
 }
+
+/** Payload accepted by POST /api/incidents. incident_no is assigned by the database. */
+export interface NewIncident extends TriageResult {
+  log_snippet: string
+}
+
+export const STATUSES: readonly Status[] = ['open', 'in-progress', 'resolved'] as const
