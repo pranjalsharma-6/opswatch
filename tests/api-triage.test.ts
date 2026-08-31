@@ -129,6 +129,56 @@ describe('POST /api/triage', () => {
     expect((await POST(post({ logs: 'x' }, '8.8.8.8'))).status).toBe(200)
   })
 
+  it('streams SSE frames and ends with a validated result', async () => {
+    async function* chunks() {
+      for (const piece of ['{"severity":"critical",', '"title":"OOMKilled",', '"root_cause":"mem","impact":"down",', '"fix":"1. a\\n2. b","component":"api"}']) {
+        yield { choices: [{ delta: { content: piece } }] }
+      }
+    }
+    createCompletion.mockResolvedValue(chunks())
+
+    const res = await POST(post({ logs: '[ERROR] boom', stream: true }))
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toContain('text/event-stream')
+
+    const body = await new Response(res.body).text()
+    const events = body
+      .split('\n\n')
+      .filter(Boolean)
+      .map((frame) => JSON.parse(frame.replace(/^data: /, '')))
+
+    expect(events.filter((e) => e.type === 'delta').length).toBe(4)
+
+    const done = events.at(-1)
+    expect(done.type).toBe('done')
+    expect(done.result).toMatchObject({ severity: 'critical', component: 'api' })
+    expect(done.result.fix).toBe('1. a\n2. b')
+  })
+
+  it('reports a mid-stream failure as an in-band error event', async () => {
+    async function* failing() {
+      yield { choices: [{ delta: { content: '{"severity":"info"' } }] }
+      throw new Error('connection reset')
+    }
+    createCompletion.mockResolvedValue(failing())
+
+    const res = await POST(post({ logs: '[ERROR] boom', stream: true }))
+    // Status is already committed as 200, so the failure travels in the body.
+    expect(res.status).toBe(200)
+
+    const body = await new Response(res.body).text()
+    expect(body).toContain('"type":"error"')
+    expect(body).toContain('connection reset')
+  })
+
+  it('still returns an HTTP status when streaming fails before the stream opens', async () => {
+    createCompletion.mockRejectedValue(
+      Object.assign(new Error('invalid api key'), { status: 401 })
+    )
+    const res = await POST(post({ logs: '[ERROR] boom', stream: true }))
+    expect(res.status).toBe(401)
+  })
+
   it('returns 400 for a non-JSON body', async () => {
     const req = new Request('http://localhost/api/triage', {
       method: 'POST',

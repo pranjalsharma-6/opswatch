@@ -23,9 +23,14 @@ triage step to a few seconds.
 
 ## Features
 
-- **AI triage** — severity, root cause, impact, remediation steps, and the failing
-  component, extracted from raw logs via Groq. Uses the model's Structured Outputs
-  mode so the response conforms to a JSON schema rather than being parsed heuristically.
+- **AI triage, streamed** — severity, root cause, impact, remediation steps, and the
+  failing component, extracted from raw logs via Groq. Uses the model's Structured
+  Outputs mode so the response conforms to a JSON schema rather than being parsed
+  heuristically. Results stream over Server-Sent Events and render field by field as
+  they arrive, so there is no blank spinner.
+- **Recurring-incident detection** — clusters incidents by component and title
+  similarity to surface "the same failure has hit api-server 3 times this week",
+  and separately flags components failing in several different ways.
 - **Model fallback chain** — hosted models get retired regularly. OpsWatch walks a
   chain of models and degrades to the next one instead of going down, and `GROQ_MODEL`
   pins a specific model when needed.
@@ -48,7 +53,7 @@ triage step to a few seconds.
 | Styling | Tailwind CSS v4 |
 | AI | Groq — LLaMA 3.3 70B, with a fallback chain |
 | Database | Supabase (PostgreSQL) |
-| Testing | Vitest — 56 tests |
+| Testing | Vitest — 101 tests |
 | CI | GitHub Actions — lint, typecheck, test, build |
 | Deployment | Vercel |
 
@@ -59,13 +64,19 @@ triage step to a few seconds.
 ```
 Browser (React client components)
   │
-  │  POST /api/triage        { logs }
+  │  POST /api/triage        { logs, stream: true }
   ▼
 Route handler
   ├─ rate limit + input validation (20k char cap)
+  ├─ resolve a working model BEFORE opening the stream
   ├─ Groq chat completion, Structured Outputs against a JSON schema
   ├─ model fallback chain on a retired-model error
-  └─ normalise + validate every field
+  └─ relay deltas as SSE, then a validated `done` frame
+  │
+  │  text/event-stream
+  ▼
+Client accumulates deltas, parses the partial JSON each chunk,
+renders whichever fields have fully arrived
   │
   │  POST /api/incidents     { severity, title, root_cause, ... }
   ▼
@@ -150,8 +161,9 @@ surfaces as an actionable message in the UI rather than a crash.
 
 ## Testing
 
-56 tests covering log parsing, model-response handling, metrics, rate limiting, and
-both API route handlers (with the Groq and Supabase clients mocked).
+101 tests covering log parsing, partial-JSON recovery, SSE framing, pattern
+clustering, metrics, rate limiting, and both API route handlers (with the Groq and
+Supabase clients mocked).
 
 ```bash
 npm test
@@ -186,6 +198,23 @@ produced duplicate numbers.
 browser, so a policy permissive enough for direct client writes is equally open to anyone
 reading the page source. Route handlers hold the service-role key instead.
 
+**Streaming resolves the model before opening the stream.** Once an SSE response is
+committed it is already a 200, so a later failure can only be reported in-band. The
+model fallback chain therefore runs first, and auth, rate-limit and retired-model
+errors still surface as real HTTP status codes. Only a mid-stream drop becomes an
+in-band `error` frame.
+
+**Partial JSON is repaired, not guessed.** A streamed response is not valid JSON until
+the final brace, so each chunk is parsed by closing the open string and containers and
+discarding a dangling key. Fields render as they complete. The client never treats its
+own partial parse as final — the terminating `done` frame carries the server-validated
+result.
+
+**Pattern clustering uses token similarity, not exact matching.** AI-written titles for
+one failure mode share their distinctive nouns but vary in phrasing, so exact signature
+matching grouped almost nothing. Titles are tokenised, stemmed, and compared by Jaccard
+index above a tuned threshold.
+
 **Rate limiting is in-memory and per-instance.** It stops one client from trivially
 draining the Groq quota. On serverless each instance carries its own counter, so the
 effective global limit is higher than configured — a durable store (Redis, Postgres) is
@@ -218,7 +247,6 @@ the next step.
 ## Roadmap
 
 - Slack notifications on critical incidents
-- Recurring-incident detection to flag systemic issues
 - Webhook ingestion from Datadog, PagerDuty, and Grafana
 - Multi-user support with per-engineer assignment
 - Durable rate limiting backed by Redis

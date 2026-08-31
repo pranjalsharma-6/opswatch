@@ -4,6 +4,7 @@ import { Loader2, Plus, Terminal, Upload, Zap } from 'lucide-react'
 import type { Incident, TriageResult } from '@/lib/types'
 import { MAX_LOG_CHARS } from '@/lib/triage'
 import { severityTone, toneStyle } from '@/lib/severity'
+import { streamTriage } from '@/lib/triage-client'
 import { useToast } from './Toast'
 
 const SAMPLES: Record<string, string> = {
@@ -38,6 +39,8 @@ export default function LogInputPanel({ onIncidentAdded }: Props) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<TriageResult | null>(null)
+  // Fields arriving mid-stream, before the validated result lands.
+  const [partial, setPartial] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
   const toast = useToast()
@@ -48,21 +51,22 @@ export default function LogInputPanel({ onIncidentAdded }: Props) {
     if (!logs.trim() || overLimit) return
     setLoading(true)
     setResult(null)
+    setPartial({})
     setError('')
 
     try {
-      const res = await fetch('/api/triage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logs }),
+      await streamTriage(logs, {
+        onPartial: setPartial,
+        onDone: (triaged) => {
+          setResult(triaged)
+          setPartial({})
+          toast('success', 'Triage complete')
+        },
+        onError: (message) => {
+          setError(message)
+          toast('error', message)
+        },
       })
-
-      // A failed route can return an HTML error page, so never assume JSON.
-      const payload = await res.json().catch(() => ({}) as { error?: string })
-      if (!res.ok) throw new Error(payload.error || `Triage failed (HTTP ${res.status})`)
-
-      setResult(payload as TriageResult)
-      toast('success', 'Triage complete')
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Something went wrong'
       setError(message)
@@ -90,6 +94,7 @@ export default function LogInputPanel({ onIncidentAdded }: Props) {
 
       onIncidentAdded(payload as Incident)
       setResult(null)
+      setPartial({})
       setLogs('')
       toast('success', `Saved ${(payload as Incident).incident_no}`)
     } catch (e) {
@@ -113,7 +118,9 @@ export default function LogInputPanel({ onIncidentAdded }: Props) {
     if (fileInput.current) fileInput.current.value = ''
   }
 
-  const tone = result ? severityTone(result.severity) : null
+  const streaming = loading && Object.keys(partial).length > 0
+  const shown = result ?? (streaming ? partial : null)
+  const tone = shown ? severityTone(String(shown.severity ?? 'info')) : null
 
   return (
     <div className="panel overflow-hidden">
@@ -216,7 +223,7 @@ export default function LogInputPanel({ onIncidentAdded }: Props) {
           </div>
         )}
 
-        {result && tone && (
+        {shown && tone && (
           <div
             className="animate-slide-up overflow-hidden rounded-[10px] border"
             style={{ borderColor: tone.border, background: tone.bg }}
@@ -226,42 +233,60 @@ export default function LogInputPanel({ onIncidentAdded }: Props) {
               style={{ borderBottom: `1px solid ${tone.border}`, color: tone.text }}
             >
               <Zap size={11} /> triage_result.json
+              {streaming && (
+                <span className="ml-auto flex items-center gap-1 font-normal opacity-80">
+                  <Loader2 size={10} className="animate-spin-slow" />
+                  streaming
+                </span>
+              )}
             </div>
 
             <div className="flex flex-col gap-2.5 p-3.5">
-              <div>
-                <p className="field-label mb-1">severity</p>
-                <span className="chip" style={toneStyle(tone)}>
-                  {result.severity}
-                </span>
-              </div>
-
-              {(
-                [
-                  ['title', result.title],
-                  ['root_cause', result.root_cause],
-                  ['impact', result.impact],
-                  ['fix', result.fix],
-                  ['component', result.component],
-                ] as const
-              ).map(([label, value]) => (
-                <div key={label}>
-                  <p className="field-label mb-1">{label}</p>
-                  <p className="whitespace-pre-line text-xs leading-relaxed" style={{ color: 'var(--color-ink)' }}>
-                    {value}
-                  </p>
+              {shown.severity && (
+                <div>
+                  <p className="field-label mb-1">severity</p>
+                  <span className="chip" style={toneStyle(tone)}>
+                    {shown.severity}
+                  </span>
                 </div>
-              ))}
+              )}
 
-              <button
-                onClick={saveIncident}
-                disabled={saving}
-                className="mt-0.5 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md border px-3 py-2 font-mono text-xs font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-60"
-                style={toneStyle(tone)}
-              >
-                {saving ? <Loader2 size={12} className="animate-spin-slow" /> : <Plus size={12} />}
-                {saving ? 'saving...' : 'add_to_incident_log()'}
-              </button>
+              {(['title', 'root_cause', 'impact', 'fix', 'component'] as const).map((label) => {
+                const value = shown[label]
+                // A field renders only once text for it has arrived, so the
+                // panel grows downwards instead of flashing empty rows.
+                if (!value) return null
+                return (
+                  <div key={label}>
+                    <p className="field-label mb-1">{label}</p>
+                    <p
+                      className="whitespace-pre-line text-xs leading-relaxed"
+                      style={{ color: 'var(--color-ink)' }}
+                    >
+                      {value}
+                      {streaming && (
+                        <span
+                          className="ml-0.5 inline-block h-3 w-1.5 translate-y-0.5 animate-pulse-dot"
+                          style={{ background: tone.text }}
+                        />
+                      )}
+                    </p>
+                  </div>
+                )
+              })}
+
+              {/* Saving is only offered once the server-validated result lands. */}
+              {result && (
+                <button
+                  onClick={saveIncident}
+                  disabled={saving}
+                  className="mt-0.5 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md border px-3 py-2 font-mono text-xs font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-60"
+                  style={toneStyle(tone)}
+                >
+                  {saving ? <Loader2 size={12} className="animate-spin-slow" /> : <Plus size={12} />}
+                  {saving ? 'saving...' : 'add_to_incident_log()'}
+                </button>
+              )}
             </div>
           </div>
         )}

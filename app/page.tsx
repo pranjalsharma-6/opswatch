@@ -5,6 +5,7 @@ import type { Incident, Status } from '@/lib/types'
 import StatCards from '@/components/StatCards'
 import LogInputPanel from '@/components/LogInputPanel'
 import IncidentTable from '@/components/IncidentTable'
+import PatternPanel from '@/components/PatternPanel'
 import { ToastProvider, useToast } from '@/components/Toast'
 
 export default function Page() {
@@ -158,6 +159,8 @@ function Dashboard() {
         </div>
 
         <StatCards incidents={incidents} />
+
+        <PatternPanel incidents={incidents} />
 
         <div className="grid items-start gap-4 lg:grid-cols-[340px_1fr]">
           <LogInputPanel onIncidentAdded={handleIncidentAdded} />
